@@ -1,0 +1,124 @@
+# -------------------------
+# Python
+# -------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# -------------------------
+# Virtual environments
+# -------------------------
+venv/
+.venv/
+env/
+ENV/
+ilhanrag/
+ilhanragllm/
+
+# -------------------------
+# Jupyter
+# -------------------------
+.ipynb_checkpoints/
+
+# -------------------------
+# IDE / Editor
+# -------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# -------------------------
+# OS
+# -------------------------
+.DS_Store
+Thumbs.db
+
+# -------------------------
+# Logs
+# -------------------------
+*.log
+
+# -------------------------
+# Build artifacts
+# -------------------------
+build/
+dist/
+*.egg-info/
+
+# -------------------------
+# Environment / secrets
+# -------------------------
+.env
+.env.*
+!.env.example
+
+# -------------------------
+# Python / HF caches
+# -------------------------
+.cache/
+huggingface/
+hf_cache/
+
+# -------------------------
+# Model artifacts
+# -------------------------
+models/base_llm/
+outputs/lora_adapter/
+outputs/**/checkpoint-*/
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+# -------------------------
+# Frontend / Node
+# -------------------------
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.vercel/
+
+# -------------------------
+# Data artifacts
+# -------------------------
+data/raw/
+data/processed/
+data/reports/
+data/vector_db/
+data/gold/
+data/llm/
+
+# -------------------------
+# Optional experiment artifacts
+# -------------------------
+artifacts/
+mlruns/
+mlflow.db
+
+# -------------------------
+# Docker / local runtime temp
+# -------------------------
+tmp/
+temp/
+
+# -------------------------
+# Qdrant / local storage
+# -------------------------
+qdrant_storage/
+qdrant_data/
+
+# -------------------------
+# Misc local files
+# -------------------------
+*.csv
+a.py
+data_prep.py
+download_financebench.py
+
+# -------------------------
+# Git internals
+# -------------------------
+.git/

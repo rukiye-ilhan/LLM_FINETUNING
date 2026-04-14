@@ -1,0 +1,54 @@
+project:
+  name: "EmpaRAG"
+  environment: "local"
+
+paths:
+  raw_data_path: "data/raw/counsel_chat_orijinal.csv"
+  processed_dir: "data/processed"
+  reports_dir: "data/reports"
+  vector_db_path: "data/vector_db"
+  pipeline_runs_dir: "artifacts/pipeline_runs"
+
+rag:
+  collection_name: "counsel_rag"
+  min_text_length: 15
+  remove_urls: true
+
+  target_topics:
+    - "anxiety"
+    - "depression"
+    - "self-esteem"
+    - "workplace-relationships"
+    - "stress"
+    - "behavioral-change"
+
+  primary_topics:
+    - "anxiety"
+    - "depression"
+
+  secondary_topics:
+    - "stress"
+    - "self-esteem"
+    - "workplace-relationships"
+    - "behavioral-change"
+
+indexing:
+  enabled: true
+  mode: "incremental_update"   # full_reindex | incremental_update | skip_for_now
+  registry_path: "artifacts/pipeline_runs/corpus_registry.json"
+
+embedding:
+  model_name: "sentence-transformers/all-MiniLM-L6-v2"
+  batch_size: 32
+
+quality:
+  min_rows_required: 100
+  min_avg_answer_length: 80
+  fail_on_missing_required_columns: true
+
+outputs:
+  corpus_parquet_name: "rag_corpus.parquet"
+  corpus_jsonl_name: "rag_corpus.jsonl"
+  quality_report_name: "data_quality_report.json"
+  run_metadata_name: "run_metadata.json"
+  evaluation_report_name: "evaluation_report.json"

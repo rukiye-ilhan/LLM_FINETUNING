@@ -1,0 +1,470 @@
+from __future__ import annotations
+
+import html
+import json
+import logging
+import re
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+
+
+# =========================
+# LOGGING
+# =========================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+
+# =========================
+# PATHS
+# =========================
+RAW_PATH = Path("data/raw/counsel_chat_orijinal.csv")
+OUT_DIR = Path("data/gold")
+
+FULL_OUTPUT_PATH = OUT_DIR / "counsel_full.parquet"
+TRAIN_OUTPUT_PATH = OUT_DIR / "counsel_train.parquet"
+VAL_OUTPUT_PATH = OUT_DIR / "counsel_val.parquet"
+STATS_OUTPUT_PATH = OUT_DIR / "counsel_stats.json"
+
+
+# =========================
+# CONFIG
+# =========================
+TARGET_TOPICS = {
+    "anxiety",
+    "depression",
+    "self-esteem",
+    "workplace-relationships",
+    "stress",
+    "behavioral-change",
+}
+
+PRIMARY_TOPICS = {"anxiety", "depression"}
+SECONDARY_TOPICS = TARGET_TOPICS - PRIMARY_TOPICS
+
+TOPIC_NORMALIZATION_MAP = {
+    "anxiety": "anxiety",
+    "depression": "depression",
+    "self-esteem": "self-esteem",
+    "workplace-relationships": "workplace-relationships",
+    "stress": "stress",
+    "behavioral-change": "behavioral-change",
+}
+
+REQUIRED_COLUMNS = [
+    "questionID",
+    "questionTitle",
+    "questionText",
+    "questionLink",
+    "topic",
+    "therapistInfo",
+    "therapistURL",
+    "answerText",
+    "upvotes",
+    "views",
+]
+
+MIN_TEXT_LENGTH = 15
+VAL_RATIO = 0.10
+RANDOM_STATE = 42
+REMOVE_URLS = True
+
+
+# =========================
+# REGEX
+# =========================
+URL_PATTERN = re.compile(r"https?://\S+|www\.\S+")
+EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+PHONE_PATTERN = re.compile(r"\+?\d[\d\s\-\(\)]{7,}\d")
+WHITESPACE_PATTERN = re.compile(r"\s+")
+
+
+# =========================
+# HELPERS
+# =========================
+def ensure_output_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def validate_input_file(file_path: Path) -> None:
+    if not file_path.exists():
+        raise FileNotFoundError(f"Raw file bulunamadı: {file_path}")
+
+
+def validate_required_columns(df: pd.DataFrame) -> None:
+    missing_columns = [col for col in REQUIRED_COLUMNS if col not in df.columns]
+    if missing_columns:
+        raise ValueError(f"Eksik kolonlar bulundu: {missing_columns}")
+
+
+def normalize_text(text: Optional[str], remove_urls: bool = True) -> str:
+    if text is None:
+        return ""
+
+    text = str(text)
+    text = html.unescape(text)
+    text = text.replace("\xa0", " ")
+
+    if remove_urls:
+        text = URL_PATTERN.sub(" ", text)
+
+    text = EMAIL_PATTERN.sub(" ", text)
+    text = PHONE_PATTERN.sub(" ", text)
+    text = WHITESPACE_PATTERN.sub(" ", text).strip()
+    return text
+
+
+def normalize_topic(topic: Optional[str]) -> str:
+    if topic is None:
+        return "other"
+
+    topic = str(topic).strip().lower()
+    return TOPIC_NORMALIZATION_MAP.get(topic, "other")
+
+
+def has_min_length(text: str, min_len: int = 15) -> bool:
+    return isinstance(text, str) and len(text.strip()) >= min_len
+
+
+def get_topic_tier(topic: str) -> str:
+    if topic in PRIMARY_TOPICS:
+        return "primary"
+    if topic in SECONDARY_TOPICS:
+        return "secondary"
+    return "other"
+
+
+def build_rag_document(
+    question_title: str,
+    topic: str,
+    question_text: str,
+    answer_text: str,
+) -> str:
+    parts = [
+        f"Title: {question_title}",
+        f"Topic: {topic}",
+        f"Question: {question_text}",
+        f"Answer: {answer_text}",
+    ]
+    return "\n".join(parts)
+
+
+def compute_quality_score(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Kalite skoru:
+    - upvotes
+    - views (log normalize)
+    - answer length
+    """
+    df = df.copy()
+
+    upvotes = df["upvotes"].fillna(0).clip(lower=0)
+    views = df["views"].fillna(0).clip(lower=0)
+    answer_length = df["answer_text"].str.len().fillna(0)
+
+    views_log = np.log1p(views)
+
+    def minmax(series: pd.Series) -> pd.Series:
+        min_v = series.min()
+        max_v = series.max()
+
+        if max_v == min_v:
+            return pd.Series([0.5] * len(series), index=series.index)
+
+        return (series - min_v) / (max_v - min_v)
+
+    upvotes_norm = minmax(upvotes)
+    views_norm = minmax(views_log)
+    answer_len_norm = minmax(answer_length)
+
+    df["quality_score"] = (
+        0.45 * upvotes_norm
+        + 0.20 * views_norm
+        + 0.35 * answer_len_norm
+    ).round(4)
+
+    return df
+
+
+def rename_columns(df: pd.DataFrame) -> pd.DataFrame:
+    return df.rename(
+        columns={
+            "questionID": "question_id",
+            "questionTitle": "question_title",
+            "questionText": "question_text",
+            "questionLink": "question_link",
+            "topic": "topic",
+            "therapistInfo": "therapist_info",
+            "therapistURL": "therapist_url",
+            "answerText": "answer_text",
+            "upvotes": "upvotes",
+            "views": "views",
+        }
+    ).copy()
+
+
+def clean_text_columns(df: pd.DataFrame, remove_urls: bool = True) -> pd.DataFrame:
+    df = df.copy()
+
+    df["question_title"] = df["question_title"].apply(
+        lambda x: normalize_text(x, remove_urls=remove_urls)
+    )
+    df["question_text"] = df["question_text"].apply(
+        lambda x: normalize_text(x, remove_urls=remove_urls)
+    )
+    df["answer_text"] = df["answer_text"].apply(
+        lambda x: normalize_text(x, remove_urls=remove_urls)
+    )
+    return df
+
+
+def clean_topic_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["topic"] = df["topic"].apply(normalize_topic)
+    df["topic_tier"] = df["topic"].apply(get_topic_tier)
+    return df
+
+
+def apply_answer_filter(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    return df[df["answer_text"].str.strip() != ""].copy()
+
+
+def apply_question_fallback(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["question_text"] = df.apply(
+        lambda row: row["question_text"]
+        if row["question_text"].strip()
+        else row["question_title"],
+        axis=1,
+    )
+    return df
+
+
+def apply_min_length_filter(df: pd.DataFrame, min_text_length: int) -> pd.DataFrame:
+    df = df.copy()
+    return df[
+        df["question_text"].apply(lambda x: has_min_length(x, min_text_length))
+        & df["answer_text"].apply(lambda x: has_min_length(x, min_text_length))
+    ].copy()
+
+
+def apply_target_topic_filter(df: pd.DataFrame, target_topics: set[str]) -> pd.DataFrame:
+    df = df.copy()
+    return df[df["topic"].isin(target_topics)].copy()
+
+
+def add_features(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    df["answer_length"] = df["answer_text"].str.len()
+
+    df["doc_id"] = (
+        df["question_id"].astype(str)
+        + "_"
+        + df.groupby("question_id").cumcount().astype(str)
+    )
+
+    df["rag_document"] = df.apply(
+        lambda row: build_rag_document(
+            question_title=row["question_title"],
+            topic=row["topic"],
+            question_text=row["question_text"],
+            answer_text=row["answer_text"],
+        ),
+        axis=1,
+    )
+
+    df = compute_quality_score(df)
+    return df
+
+
+def select_final_columns(df: pd.DataFrame) -> pd.DataFrame:
+    keep_columns = [
+        "doc_id",
+        "question_id",
+        "question_title",
+        "question_text",
+        "answer_text",
+        "topic",
+        "topic_tier",
+        "upvotes",
+        "views",
+        "answer_length",
+        "quality_score",
+        "rag_document",
+    ]
+    return df[keep_columns].reset_index(drop=True)
+
+
+def preprocess_counsel_dataset(
+    file_path: Path,
+    target_topics: Optional[set[str]] = None,
+    min_text_length: int = 15,
+    remove_urls: bool = True,
+) -> pd.DataFrame:
+    if target_topics is None:
+        target_topics = TARGET_TOPICS
+
+    validate_input_file(file_path)
+
+    logger.info("CSV okunuyor...")
+    df = pd.read_csv(file_path)
+
+    logger.info("Kolon kontrolü yapılıyor...")
+    validate_required_columns(df)
+
+    logger.info("Kolon isimleri normalize ediliyor...")
+    df = rename_columns(df)
+
+    logger.info("Metin sütunları temizleniyor...")
+    df = clean_text_columns(df, remove_urls=remove_urls)
+
+    logger.info("Topic normalize ediliyor...")
+    df = clean_topic_columns(df)
+
+    logger.info("Boş answer kayıtları atılıyor...")
+    before = len(df)
+    df = apply_answer_filter(df)
+    logger.info("Answer filter: %s -> %s", before, len(df))
+
+    logger.info("Question fallback uygulanıyor...")
+    df = apply_question_fallback(df)
+
+    logger.info("Minimum uzunluk filtresi uygulanıyor...")
+    before = len(df)
+    df = apply_min_length_filter(df, min_text_length=min_text_length)
+    logger.info("Length filter: %s -> %s", before, len(df))
+
+    logger.info("Target topic filtresi uygulanıyor...")
+    before = len(df)
+    df = apply_target_topic_filter(df, target_topics=target_topics)
+    logger.info("Topic filter: %s -> %s", before, len(df))
+
+    if df.empty:
+        raise ValueError("Tüm filtrelerden sonra veri boş kaldı.")
+
+    logger.info("Feature kolonları ekleniyor...")
+    df = add_features(df)
+
+    logger.info("Final kolonlar seçiliyor...")
+    df = select_final_columns(df)
+
+    return df
+
+
+def safe_train_val_split(
+    df: pd.DataFrame,
+    test_size: float = 0.10,
+    random_state: int = 42,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    question_id bazlı split.
+    Topic dağılımı uygunsa stratify kullanır.
+    Uygun değilse random split'e düşer.
+    """
+    unique_questions = df[["question_id", "topic"]].drop_duplicates().copy()
+
+    topic_counts = unique_questions["topic"].value_counts()
+    can_stratify = len(topic_counts) > 1 and (topic_counts >= 2).all()
+
+    if can_stratify:
+        logger.info("Stratified split uygulanıyor...")
+        train_q, val_q = train_test_split(
+            unique_questions,
+            test_size=test_size,
+            random_state=random_state,
+            stratify=unique_questions["topic"],
+        )
+    else:
+        logger.warning("Stratify mümkün değil, random split uygulanıyor.")
+        train_q, val_q = train_test_split(
+            unique_questions,
+            test_size=test_size,
+            random_state=random_state,
+            shuffle=True,
+        )
+
+    train_ids = set(train_q["question_id"])
+    val_ids = set(val_q["question_id"])
+
+    train_df = df[df["question_id"].isin(train_ids)].copy()
+    val_df = df[df["question_id"].isin(val_ids)].copy()
+
+    return train_df, val_df
+
+
+def build_stats(full_df: pd.DataFrame, train_df: pd.DataFrame, val_df: pd.DataFrame) -> dict:
+    return {
+        "full_shape": list(full_df.shape),
+        "train_shape": list(train_df.shape),
+        "val_shape": list(val_df.shape),
+        "full_topic_distribution": full_df["topic"].value_counts().to_dict(),
+        "train_topic_distribution": train_df["topic"].value_counts().to_dict(),
+        "val_topic_distribution": val_df["topic"].value_counts().to_dict(),
+        "topic_tier_distribution": full_df["topic_tier"].value_counts().to_dict(),
+        "quality_score_summary": {
+            "min": float(full_df["quality_score"].min()),
+            "max": float(full_df["quality_score"].max()),
+            "mean": float(full_df["quality_score"].mean()),
+            "median": float(full_df["quality_score"].median()),
+        },
+        "answer_length_summary": {
+            "min": int(full_df["answer_length"].min()),
+            "max": int(full_df["answer_length"].max()),
+            "mean": float(full_df["answer_length"].mean()),
+            "median": float(full_df["answer_length"].median()),
+        },
+    }
+
+
+def save_outputs(full_df: pd.DataFrame, train_df: pd.DataFrame, val_df: pd.DataFrame) -> None:
+    logger.info("Output klasörü hazırlanıyor...")
+    ensure_output_dir(OUT_DIR)
+
+    logger.info("Parquet dosyaları kaydediliyor...")
+    full_df.to_parquet(FULL_OUTPUT_PATH, index=False)
+    train_df.to_parquet(TRAIN_OUTPUT_PATH, index=False)
+    val_df.to_parquet(VAL_OUTPUT_PATH, index=False)
+
+    logger.info("Stats json kaydediliyor...")
+    stats = build_stats(full_df, train_df, val_df)
+    with open(STATS_OUTPUT_PATH, "w", encoding="utf-8") as f:
+        json.dump(stats, f, ensure_ascii=False, indent=2)
+
+
+def main():
+    logger.info("Counsel gold dataset build başladı...")
+
+    full_df = preprocess_counsel_dataset(
+        file_path=RAW_PATH,
+        target_topics=TARGET_TOPICS,
+        min_text_length=MIN_TEXT_LENGTH,
+        remove_urls=REMOVE_URLS,
+    )
+
+    logger.info("Train/val split yapılıyor...")
+    train_df, val_df = safe_train_val_split(
+        full_df,
+        test_size=VAL_RATIO,
+        random_state=RANDOM_STATE,
+    )
+
+    save_outputs(full_df, train_df, val_df)
+
+    logger.info("Tamamlandı.")
+    logger.info("FULL  : %s", full_df.shape)
+    logger.info("TRAIN : %s", train_df.shape)
+    logger.info("VAL   : %s", val_df.shape)
+    logger.info("Topic distribution: %s", full_df["topic"].value_counts().to_dict())
+
+
+if __name__ == "__main__":
+    main()
