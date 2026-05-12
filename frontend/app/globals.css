@@ -1,5 +1,10 @@
 @import "tailwindcss";
 
+:root {
+  --background: #f7faf8;
+  --foreground: #10202a;
+}
+
 html,
 body {
   margin: 0;
@@ -7,7 +12,83 @@ body {
 }
 
 body {
-  background: #f3f4f6;
-  color: #111827;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 18% 12%, rgba(186, 230, 253, 0.35), transparent 30%),
+    radial-gradient(circle at 78% 8%, rgba(220, 252, 231, 0.55), transparent 32%),
+    radial-gradient(circle at 50% 82%, rgba(226, 232, 240, 0.45), transparent 34%),
+    var(--background);
+  color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+textarea,
+input {
+  font: inherit;
+}
+
+textarea::placeholder {
+  color: #94a3b8;
+}
+
+@keyframes breathe {
+  0%, 100% {
+    transform: scale(0.78);
+    opacity: 0.72;
+  }
+  50% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes floatSoft {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes pulseRing {
+  0% {
+    transform: scale(0.82);
+    opacity: 0.5;
+  }
+  70% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+}
+
+.breathe-orb {
+  animation: breathe 8s ease-in-out infinite;
+}
+
+.float-soft {
+  animation: floatSoft 6s ease-in-out infinite;
+}
+
+.pulse-ring::before,
+.pulse-ring::after {
+  content: "";
+  position: absolute;
+  inset: -16px;
+  border-radius: 9999px;
+  border: 1px solid rgba(125, 211, 252, 0.45);
+  animation: pulseRing 2.6s ease-out infinite;
+}
+
+.pulse-ring::after {
+  animation-delay: 1.3s;
 }
