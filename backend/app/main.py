@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.api.router import api_router
 
-app = FastAPI(title="EmpaRAG API", version="1.0.0")
+app = FastAPI(title="EmpaRAG Backend")
 
 app.add_middleware(
     CORSMiddleware,

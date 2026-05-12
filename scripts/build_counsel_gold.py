@@ -85,6 +85,31 @@ EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
 PHONE_PATTERN = re.compile(r"\+?\d[\d\s\-\(\)]{7,}\d")
 WHITESPACE_PATTERN = re.compile(r"\s+")
 
+BAD_ANSWER_PATTERNS = [
+    r"\bthe other .* post answers?\b",
+    r"\bthe other .* answers?\b",
+    r"\bas mentioned above\b",
+    r"\bsee (the )?illustration below\b",
+    r"\bsee below\b",
+    r"\bworking with me you will learn\b",
+    r"\ball about thinking errors\b",
+    r"\bother post\b",
+    r"\bother answers\b",
+]
+
+CLICKBAIT_TITLE_PATTERNS = [
+    r"^\d+\s+ways\b",
+    r"^\d+\s+signs\b",
+    r"^\d+\s+reasons\b",
+    r"^\d+\s+tips\b",
+    r"^\d+\s+benefits\b",
+]
+
+ELLIPSIS_HEAVY_PATTERN = re.compile(r"\.\.\.")
+NUMBERED_LIST_HEAVY_PATTERN = re.compile(r"(?:^|\s)\d+\.")
+BAD_ANSWER_REGEXES = [re.compile(p, re.IGNORECASE) for p in BAD_ANSWER_PATTERNS]
+CLICKBAIT_REGEXES = [re.compile(p, re.IGNORECASE) for p in CLICKBAIT_TITLE_PATTERNS]
+
 
 # =========================
 # HELPERS
@@ -157,12 +182,6 @@ def build_rag_document(
 
 
 def compute_quality_score(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Kalite skoru:
-    - upvotes
-    - views (log normalize)
-    - answer length
-    """
     df = df.copy()
 
     upvotes = df["upvotes"].fillna(0).clip(lower=0)
@@ -212,7 +231,6 @@ def rename_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 def clean_text_columns(df: pd.DataFrame, remove_urls: bool = True) -> pd.DataFrame:
     df = df.copy()
-
     df["question_title"] = df["question_title"].apply(
         lambda x: normalize_text(x, remove_urls=remove_urls)
     )
@@ -261,11 +279,58 @@ def apply_target_topic_filter(df: pd.DataFrame, target_topics: set[str]) -> pd.D
     return df[df["topic"].isin(target_topics)].copy()
 
 
+def contains_bad_answer_pattern(text: str) -> bool:
+    if not isinstance(text, str):
+        return False
+    return any(pattern.search(text) for pattern in BAD_ANSWER_REGEXES)
+
+
+def looks_like_clickbait_title(text: str) -> bool:
+    if not isinstance(text, str):
+        return False
+    text = text.strip()
+    return any(pattern.search(text) for pattern in CLICKBAIT_REGEXES)
+
+
+def is_low_quality_artifact_answer(text: str) -> bool:
+    if not isinstance(text, str):
+        return True
+
+    t = text.strip()
+    if not t:
+        return True
+
+    if contains_bad_answer_pattern(t):
+        return True
+
+    if looks_like_clickbait_title(t):
+        return True
+
+    if ELLIPSIS_HEAVY_PATTERN.search(t) and len(t) < 500:
+        return True
+
+    if NUMBERED_LIST_HEAVY_PATTERN.search(t) and len(t.split()) < 50:
+        return True
+
+    return False
+
+
+def apply_bad_answer_filter(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    mask = ~df["answer_text"].apply(is_low_quality_artifact_answer)
+    return df[mask].copy()
+
+
+def apply_title_artifact_filter(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    mask = ~df["question_title"].apply(looks_like_clickbait_title)
+    return df[mask].copy()
+
+
 def add_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
     df["answer_length"] = df["answer_text"].str.len()
-
     df["doc_id"] = (
         df["question_id"].astype(str)
         + "_"
@@ -348,6 +413,16 @@ def preprocess_counsel_dataset(
     df = apply_target_topic_filter(df, target_topics=target_topics)
     logger.info("Topic filter: %s -> %s", before, len(df))
 
+    logger.info("Artifact / düşük kalite answer filtresi uygulanıyor...")
+    before = len(df)
+    df = apply_bad_answer_filter(df)
+    logger.info("Bad answer filter: %s -> %s", before, len(df))
+
+    logger.info("Clickbait / artifact title filtresi uygulanıyor...")
+    before = len(df)
+    df = apply_title_artifact_filter(df)
+    logger.info("Title artifact filter: %s -> %s", before, len(df))
+
     if df.empty:
         raise ValueError("Tüm filtrelerden sonra veri boş kaldı.")
 
@@ -365,11 +440,6 @@ def safe_train_val_split(
     test_size: float = 0.10,
     random_state: int = 42,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    question_id bazlı split.
-    Topic dağılımı uygunsa stratify kullanır.
-    Uygun değilse random split'e düşer.
-    """
     unique_questions = df[["question_id", "topic"]].drop_duplicates().copy()
 
     topic_counts = unique_questions["topic"].value_counts()
