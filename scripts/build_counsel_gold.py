@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -25,7 +26,8 @@ logger = logging.getLogger(__name__)
 # =========================
 # PATHS
 # =========================
-RAW_PATH = Path("data/raw/counsel_chat_orijinal.csv")
+RAW_PATH = Path(os.getenv("COUNSEL_RAW_PATH", "data/raw/counsel_revised_zero_data_loss.xlsx"))
+RAW_SHEET_NAME = os.getenv("COUNSEL_RAW_SHEET", "rag_ready")
 OUT_DIR = Path("data/gold")
 
 FULL_OUTPUT_PATH = OUT_DIR / "counsel_full.parquet"
@@ -37,17 +39,10 @@ STATS_OUTPUT_PATH = OUT_DIR / "counsel_stats.json"
 # =========================
 # CONFIG
 # =========================
-TARGET_TOPICS = {
-    "anxiety",
-    "depression",
-    "self-esteem",
-    "workplace-relationships",
-    "stress",
-    "behavioral-change",
-}
+TARGET_TOPICS = None
 
 PRIMARY_TOPICS = {"anxiety", "depression"}
-SECONDARY_TOPICS = TARGET_TOPICS - PRIMARY_TOPICS
+SECONDARY_TOPICS: set[str] = set()
 
 TOPIC_NORMALIZATION_MAP = {
     "anxiety": "anxiety",
@@ -59,22 +54,60 @@ TOPIC_NORMALIZATION_MAP = {
 }
 
 REQUIRED_COLUMNS = [
-    "questionID",
-    "questionTitle",
-    "questionText",
-    "questionLink",
     "topic",
-    "therapistInfo",
-    "therapistURL",
-    "answerText",
     "upvotes",
-    "views",
 ]
+
+COLUMN_ALIASES = {
+    "question_id": ["question_id", "questionID"],
+    "question_title": ["question_title", "questionTitle"],
+    "question_text": ["question_text", "questionText"],
+    "question_link": ["question_link", "questionLink"],
+    "topic": ["topic"],
+    "therapist_info": ["therapist_info", "therapistInfo"],
+    "therapist_url": ["therapist_url", "therapistURL"],
+    "answer_text": ["answer_text", "answer", "answerText"],
+    "upvotes": ["upvotes"],
+    "views": ["views"],
+    "original_question_text": ["original_question_text"],
+    "detected_approach": ["detected_approach"],
+    "revision_status": ["revision_status"],
+    "context_cluster": ["context_cluster"],
+    "revision_note": ["revision_note"],
+}
+
+REQUIRED_CANONICAL_COLUMNS = [
+    "question_id",
+    "question_title",
+    "question_text",
+    "topic",
+    "answer_text",
+    "upvotes",
+]
+
+OPTIONAL_COLUMN_DEFAULTS = {
+    "question_link": "",
+    "therapist_info": "",
+    "therapist_url": "",
+    "views": 0,
+    "original_question_text": "",
+    "detected_approach": "",
+    "revision_status": "",
+    "context_cluster": "",
+    "revision_note": "",
+}
 
 MIN_TEXT_LENGTH = 15
 VAL_RATIO = 0.10
 RANDOM_STATE = 42
 REMOVE_URLS = True
+DROP_LOW_QUALITY_ARTIFACTS = os.getenv("COUNSEL_DROP_ARTIFACTS", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "y",
+    "on",
+}
 
 
 # =========================
@@ -84,6 +117,47 @@ URL_PATTERN = re.compile(r"https?://\S+|www\.\S+")
 EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 PHONE_PATTERN = re.compile(r"\+?\d[\d\s\-\(\)]{7,}\d")
 WHITESPACE_PATTERN = re.compile(r"\s+")
+
+FORUM_STYLE_REPLACEMENTS = [
+    (
+        re.compile(r"^\s*(yeah|yes)[,. ]+i get the same problem\.{0,3}\s*", re.IGNORECASE),
+        "",
+    ),
+    (
+        re.compile(r"\blook[,]?\s+i'?m not a professional but i'?ve heard (?:a few )?things\.?\s*", re.IGNORECASE),
+        "",
+    ),
+    (
+        re.compile(r"\bi'?m not a professional\b[,. ]*", re.IGNORECASE),
+        "",
+    ),
+    (
+        re.compile(r"\bi am not a professional\b[,. ]*", re.IGNORECASE),
+        "",
+    ),
+    (
+        re.compile(r"\bi'?ve heard (?:a few )?things\.?\s*", re.IGNORECASE),
+        "",
+    ),
+    (
+        re.compile(
+            r"\ba powernap can help\.?\s*just a half hour of sleep can clear your mind and let you refocus\.?",
+            re.IGNORECASE,
+        ),
+        "A brief reset can help you clear your mind and refocus.",
+    ),
+    (
+        re.compile(
+            r"\balso, brain activity increases with physical exertion\.?\s*just walk around for a minute and get your brain working and that'll help you reach the task at hand\.?",
+            re.IGNORECASE,
+        ),
+        "A short walk can also help you reset before returning to the task at hand.",
+    ),
+    (
+        re.compile(r"\btaking breaks it totally okay\b", re.IGNORECASE),
+        "Taking breaks is okay",
+    ),
+]
 
 BAD_ANSWER_PATTERNS = [
     r"\bthe other .* post answers?\b",
@@ -123,14 +197,70 @@ def validate_input_file(file_path: Path) -> None:
         raise FileNotFoundError(f"Raw file bulunamadı: {file_path}")
 
 
+def read_source_dataframe(file_path: Path, sheet_name: Optional[str] = None) -> pd.DataFrame:
+    suffix = file_path.suffix.lower()
+
+    if suffix in {".xlsx", ".xls"}:
+        excel_file = pd.ExcelFile(file_path)
+        selected_sheet = (
+            sheet_name
+            if sheet_name in excel_file.sheet_names
+            else excel_file.sheet_names[0]
+        )
+        return pd.read_excel(file_path, sheet_name=selected_sheet)
+
+    if suffix == ".csv":
+        return pd.read_csv(file_path)
+
+    raise ValueError(f"Desteklenmeyen raw veri formati: {file_path.suffix}")
+
+
+def find_source_column(df: pd.DataFrame, canonical_name: str) -> Optional[str]:
+    aliases = COLUMN_ALIASES.get(canonical_name, [canonical_name])
+    for alias in aliases:
+        if alias in df.columns:
+            return alias
+
+    return None
+
+
 def validate_required_columns(df: pd.DataFrame) -> None:
-    missing_columns = [col for col in REQUIRED_COLUMNS if col not in df.columns]
+    missing_columns = [
+        canonical_name
+        for canonical_name in REQUIRED_CANONICAL_COLUMNS
+        if find_source_column(df, canonical_name) is None
+    ]
     if missing_columns:
         raise ValueError(f"Eksik kolonlar bulundu: {missing_columns}")
 
 
+def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    validate_required_columns(df)
+
+    standardized = pd.DataFrame(index=df.index)
+
+    for canonical_name in REQUIRED_CANONICAL_COLUMNS:
+        source_column = find_source_column(df, canonical_name)
+        standardized[canonical_name] = df[source_column]
+
+    for canonical_name, default_value in OPTIONAL_COLUMN_DEFAULTS.items():
+        source_column = find_source_column(df, canonical_name)
+        if source_column is None:
+            standardized[canonical_name] = default_value
+        else:
+            standardized[canonical_name] = df[source_column]
+
+    for numeric_column in ["upvotes", "views"]:
+        standardized[numeric_column] = pd.to_numeric(
+            standardized[numeric_column],
+            errors="coerce",
+        ).fillna(0)
+
+    return standardized.copy()
+
+
 def normalize_text(text: Optional[str], remove_urls: bool = True) -> str:
-    if text is None:
+    if text is None or pd.isna(text):
         return ""
 
     text = str(text)
@@ -146,12 +276,28 @@ def normalize_text(text: Optional[str], remove_urls: bool = True) -> str:
     return text
 
 
+def sanitize_answer_for_generation(text: Optional[str]) -> str:
+    sanitized = normalize_text(text, remove_urls=True)
+
+    for pattern, replacement in FORUM_STYLE_REPLACEMENTS:
+        sanitized = pattern.sub(replacement, sanitized)
+
+    sanitized = WHITESPACE_PATTERN.sub(" ", sanitized).strip()
+    sanitized = re.sub(r"^[.\s]+", "", sanitized).strip()
+    if not sanitized:
+        return ""
+
+    return sanitized[:1].upper() + sanitized[1:]
+
+
 def normalize_topic(topic: Optional[str]) -> str:
-    if topic is None:
+    if topic is None or pd.isna(topic):
         return "other"
 
     topic = str(topic).strip().lower()
-    return TOPIC_NORMALIZATION_MAP.get(topic, "other")
+    topic = TOPIC_NORMALIZATION_MAP.get(topic, topic)
+    topic = WHITESPACE_PATTERN.sub("-", topic)
+    return topic or "other"
 
 
 def has_min_length(text: str, min_len: int = 15) -> bool:
@@ -161,7 +307,7 @@ def has_min_length(text: str, min_len: int = 15) -> bool:
 def get_topic_tier(topic: str) -> str:
     if topic in PRIMARY_TOPICS:
         return "primary"
-    if topic in SECONDARY_TOPICS:
+    if topic in SECONDARY_TOPICS or topic != "other":
         return "secondary"
     return "other"
 
@@ -171,13 +317,26 @@ def build_rag_document(
     topic: str,
     question_text: str,
     answer_text: str,
+    detected_approach: str = "",
+    context_cluster: str = "",
 ) -> str:
     parts = [
         f"Title: {question_title}",
         f"Topic: {topic}",
-        f"Question: {question_text}",
-        f"Answer: {answer_text}",
     ]
+
+    if detected_approach:
+        parts.append(f"Approach: {detected_approach}")
+
+    if context_cluster:
+        parts.append(f"Context Cluster: {context_cluster}")
+
+    parts.extend(
+        [
+            f"Question: {question_text}",
+            f"Answer: {answer_text}",
+        ]
+    )
     return "\n".join(parts)
 
 
@@ -240,6 +399,16 @@ def clean_text_columns(df: pd.DataFrame, remove_urls: bool = True) -> pd.DataFra
     df["answer_text"] = df["answer_text"].apply(
         lambda x: normalize_text(x, remove_urls=remove_urls)
     )
+    df["answer_for_generation"] = df["answer_text"].apply(sanitize_answer_for_generation)
+    df["original_question_text"] = df["original_question_text"].apply(
+        lambda x: normalize_text(x, remove_urls=remove_urls)
+    )
+    df["detected_approach"] = df["detected_approach"].apply(
+        lambda x: normalize_text(x, remove_urls=False)
+    )
+    df["context_cluster"] = df["context_cluster"].apply(
+        lambda x: normalize_text(x, remove_urls=False)
+    )
     return df
 
 
@@ -252,7 +421,9 @@ def clean_topic_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 def apply_answer_filter(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    return df[df["answer_text"].str.strip() != ""].copy()
+    df = df[df["answer_text"].str.strip() != ""].copy()
+    df.loc[df["answer_for_generation"].str.strip() == "", "answer_for_generation"] = df["answer_text"]
+    return df
 
 
 def apply_question_fallback(df: pd.DataFrame) -> pd.DataFrame:
@@ -276,6 +447,9 @@ def apply_min_length_filter(df: pd.DataFrame, min_text_length: int) -> pd.DataFr
 
 def apply_target_topic_filter(df: pd.DataFrame, target_topics: set[str]) -> pd.DataFrame:
     df = df.copy()
+    if not target_topics:
+        return df
+
     return df[df["topic"].isin(target_topics)].copy()
 
 
@@ -342,7 +516,9 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
             question_title=row["question_title"],
             topic=row["topic"],
             question_text=row["question_text"],
-            answer_text=row["answer_text"],
+            answer_text=row["answer_for_generation"],
+            detected_approach=row.get("detected_approach", ""),
+            context_cluster=row.get("context_cluster", ""),
         ),
         axis=1,
     )
@@ -358,12 +534,17 @@ def select_final_columns(df: pd.DataFrame) -> pd.DataFrame:
         "question_title",
         "question_text",
         "answer_text",
+        "answer_for_generation",
         "topic",
         "topic_tier",
         "upvotes",
         "views",
         "answer_length",
         "quality_score",
+        "original_question_text",
+        "detected_approach",
+        "revision_status",
+        "context_cluster",
         "rag_document",
     ]
     return df[keep_columns].reset_index(drop=True)
@@ -380,14 +561,14 @@ def preprocess_counsel_dataset(
 
     validate_input_file(file_path)
 
-    logger.info("CSV okunuyor...")
-    df = pd.read_csv(file_path)
+    logger.info("Raw veri okunuyor...")
+    df = read_source_dataframe(file_path, sheet_name=RAW_SHEET_NAME)
 
     logger.info("Kolon kontrolü yapılıyor...")
     validate_required_columns(df)
 
-    logger.info("Kolon isimleri normalize ediliyor...")
-    df = rename_columns(df)
+    logger.info("Kolon isimleri standart hale getiriliyor...")
+    df = standardize_columns(df)
 
     logger.info("Metin sütunları temizleniyor...")
     df = clean_text_columns(df, remove_urls=remove_urls)
@@ -413,15 +594,18 @@ def preprocess_counsel_dataset(
     df = apply_target_topic_filter(df, target_topics=target_topics)
     logger.info("Topic filter: %s -> %s", before, len(df))
 
-    logger.info("Artifact / düşük kalite answer filtresi uygulanıyor...")
-    before = len(df)
-    df = apply_bad_answer_filter(df)
-    logger.info("Bad answer filter: %s -> %s", before, len(df))
+    if DROP_LOW_QUALITY_ARTIFACTS:
+        logger.info("Artifact / düşük kalite answer filtresi uygulanıyor...")
+        before = len(df)
+        df = apply_bad_answer_filter(df)
+        logger.info("Bad answer filter: %s -> %s", before, len(df))
 
-    logger.info("Clickbait / artifact title filtresi uygulanıyor...")
-    before = len(df)
-    df = apply_title_artifact_filter(df)
-    logger.info("Title artifact filter: %s -> %s", before, len(df))
+        logger.info("Clickbait / artifact title filtresi uygulanıyor...")
+        before = len(df)
+        df = apply_title_artifact_filter(df)
+        logger.info("Title artifact filter: %s -> %s", before, len(df))
+    else:
+        logger.info("Artifact filtreleri atlandi; zero-data-loss modu aktif.")
 
     if df.empty:
         raise ValueError("Tüm filtrelerden sonra veri boş kaldı.")
@@ -480,6 +664,13 @@ def build_stats(full_df: pd.DataFrame, train_df: pd.DataFrame, val_df: pd.DataFr
         "train_topic_distribution": train_df["topic"].value_counts().to_dict(),
         "val_topic_distribution": val_df["topic"].value_counts().to_dict(),
         "topic_tier_distribution": full_df["topic_tier"].value_counts().to_dict(),
+        "duplicate_question_text_count": int(full_df["question_text"].duplicated().sum()),
+        "duplicate_answer_count": int(full_df["answer_text"].duplicated().sum()),
+        "sanitized_answer_count": int(
+            (full_df["answer_text"] != full_df["answer_for_generation"]).sum()
+        ),
+        "revision_status_distribution": full_df["revision_status"].value_counts().to_dict(),
+        "detected_approach_distribution": full_df["detected_approach"].value_counts().to_dict(),
         "quality_score_summary": {
             "min": float(full_df["quality_score"].min()),
             "max": float(full_df["quality_score"].max()),

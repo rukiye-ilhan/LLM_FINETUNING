@@ -49,6 +49,7 @@ export default function AuthGate() {
 
   return (
     <ChatBox
+      key={user.user_id}
       user={user}
       onLogout={() => {
         clearAuth();

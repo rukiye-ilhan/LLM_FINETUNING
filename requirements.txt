@@ -1,13 +1,15 @@
-# --- SENİN RAG ---
+# --- RAG ---
 pandas==2.2.3
 numpy==2.1.3
 pyarrow==18.1.0
+openpyxl==3.1.5
+scikit-learn==1.6.0
 sentence-transformers==3.0.1
 qdrant-client==1.10.1
 tqdm==4.67.1
 PyYAML==6.0.2
 
-# --- LLM / FINETUNE (ZORUNLU) ---
+# --- LLM / FINETUNE ---
 torch
 transformers
 datasets
@@ -15,5 +17,5 @@ accelerate
 peft
 safetensors
 
-# --- OPSIYONEL (VRAM AZALTMA / QLORA) ---
+# --- OPTIONAL VRAM REDUCTION / QLORA ---
 bitsandbytes

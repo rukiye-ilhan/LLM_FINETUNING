@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 from pathlib import Path
 from typing import Dict, List
 
@@ -38,38 +39,65 @@ MODEL_PATH = BASE_DIR / "models" / "base_llm"
 TRAIN_PATH = BASE_DIR / "data" / "llm" / "sft_train.jsonl"
 VAL_PATH = BASE_DIR / "data" / "llm" / "sft_val.jsonl"
 
-OUTPUT_DIR = BASE_DIR / "outputs" / "lora_adapter"
+OUTPUT_DIR = Path(os.getenv("LORA_OUTPUT_DIR", BASE_DIR / "outputs" / "lora_adapter"))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # =========================
 # CONFIG
 # =========================
-SEED = 42
-MAX_LENGTH = 1024
+def get_int_env(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
 
-PER_DEVICE_TRAIN_BATCH_SIZE = 2
-PER_DEVICE_EVAL_BATCH_SIZE = 2
-GRADIENT_ACCUMULATION_STEPS = 8
+    return int(value)
 
-LEARNING_RATE = 2e-4
-NUM_EPOCHS = 2
-WEIGHT_DECAY = 0.01
-WARMUP_RATIO = 0.03
-LOGGING_STEPS = 20
-EVAL_STEPS = 100
-SAVE_STEPS = 100
-SAVE_TOTAL_LIMIT = 2
 
-LORA_R = 16
-LORA_ALPHA = 32
-LORA_DROPOUT = 0.05
+def get_float_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
 
-# Qwen tipi modeller için güvenli hedef modüller
-TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj"]
+    return float(value)
+
+
+def get_bool_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+SEED = get_int_env("TRAIN_SEED", 42)
+MAX_LENGTH = get_int_env("MAX_LENGTH", 1024)
+
+PER_DEVICE_TRAIN_BATCH_SIZE = get_int_env("PER_DEVICE_TRAIN_BATCH_SIZE", 2)
+PER_DEVICE_EVAL_BATCH_SIZE = get_int_env("PER_DEVICE_EVAL_BATCH_SIZE", 2)
+GRADIENT_ACCUMULATION_STEPS = get_int_env("GRADIENT_ACCUMULATION_STEPS", 8)
+
+LEARNING_RATE = get_float_env("LEARNING_RATE", 2e-4)
+NUM_EPOCHS = get_float_env("NUM_EPOCHS", 2)
+MAX_STEPS = get_int_env("MAX_STEPS", -1)
+WEIGHT_DECAY = get_float_env("WEIGHT_DECAY", 0.01)
+WARMUP_RATIO = get_float_env("WARMUP_RATIO", 0.03)
+LOGGING_STEPS = get_int_env("LOGGING_STEPS", 20)
+EVAL_STEPS = get_int_env("EVAL_STEPS", 100)
+SAVE_STEPS = get_int_env("SAVE_STEPS", 100)
+SAVE_TOTAL_LIMIT = get_int_env("SAVE_TOTAL_LIMIT", 2)
+
+LORA_R = get_int_env("LORA_R", 16)
+LORA_ALPHA = get_int_env("LORA_ALPHA", 32)
+LORA_DROPOUT = get_float_env("LORA_DROPOUT", 0.05)
+
+# Qwen-style attention + MLP projections give stronger adaptation than attention-only LoRA.
+TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+RESPONSE_MARKER = "### Response:\n"
 
 USE_BF16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
 USE_FP16 = torch.cuda.is_available() and not USE_BF16
+GRADIENT_CHECKPOINTING = get_bool_env("GRADIENT_CHECKPOINTING", True)
 
 
 # =========================
@@ -123,14 +151,55 @@ def format_example(example: Dict) -> Dict[str, str]:
 
 
 def tokenize_function(examples: Dict[str, List[str]], tokenizer) -> Dict[str, List[List[int]]]:
+    texts = [
+        text + (tokenizer.eos_token or "")
+        for text in examples["text"]
+    ]
     tokenized = tokenizer(
-        examples["text"],
+        texts,
         truncation=True,
         max_length=MAX_LENGTH,
         padding="max_length",
     )
-    tokenized["labels"] = tokenized["input_ids"].copy()
+
+    marker_ids = tokenizer(
+        RESPONSE_MARKER,
+        add_special_tokens=False,
+    )["input_ids"]
+
+    labels = []
+    for input_ids, attention_mask in zip(
+        tokenized["input_ids"],
+        tokenized["attention_mask"],
+    ):
+        label = input_ids.copy()
+        response_start = find_subsequence(input_ids, marker_ids)
+
+        if response_start >= 0:
+            response_start += len(marker_ids)
+            for idx in range(response_start):
+                label[idx] = -100
+
+        for idx, mask in enumerate(attention_mask):
+            if mask == 0:
+                label[idx] = -100
+
+        labels.append(label)
+
+    tokenized["labels"] = labels
     return tokenized
+
+
+def find_subsequence(sequence: List[int], subsequence: List[int]) -> int:
+    if not subsequence:
+        return -1
+
+    last_start = len(sequence) - len(subsequence)
+    for start in range(last_start + 1):
+        if sequence[start:start + len(subsequence)] == subsequence:
+            return start
+
+    return -1
 
 
 def print_dataset_preview(train_records: List[Dict]) -> None:
@@ -167,6 +236,7 @@ def main():
     set_seed(SEED)
 
     validate_paths()
+    logger.info("Output dir: %s", OUTPUT_DIR)
 
     logger.info("CUDA available: %s", torch.cuda.is_available())
     if torch.cuda.is_available():
@@ -185,10 +255,10 @@ def main():
 
     logger.info("Base model yükleniyor...")
     model = AutoModelForCausalLM.from_pretrained(
-    MODEL_PATH,
-    local_files_only=True,
-    dtype=torch.bfloat16 if USE_BF16 else (torch.float16 if USE_FP16 else torch.float32),
-)
+        MODEL_PATH,
+        local_files_only=True,
+        dtype=torch.bfloat16 if USE_BF16 else (torch.float16 if USE_FP16 else torch.float32),
+    )
 
     logger.info("LoRA config hazırlanıyor...")
     lora_config = LoraConfig(
@@ -204,7 +274,8 @@ def main():
     model = get_peft_model(model, lora_config)
     model.enable_input_require_grads()
 
-    model.gradient_checkpointing_enable()
+    if GRADIENT_CHECKPOINTING:
+        model.gradient_checkpointing_enable()
     model.config.use_cache = False
     
     trainable, total = get_trainable_parameters(model)
@@ -266,12 +337,13 @@ def main():
         eval_steps=EVAL_STEPS,
         save_steps=SAVE_STEPS,
         save_total_limit=SAVE_TOTAL_LIMIT,
+        max_steps=MAX_STEPS,
         bf16=USE_BF16,
         fp16=USE_FP16,
         report_to="none",
         remove_unused_columns=False,
         dataloader_pin_memory=True,
-        gradient_checkpointing=True,
+        gradient_checkpointing=GRADIENT_CHECKPOINTING,
         load_best_model_at_end=False,
         lr_scheduler_type="cosine",
     )
@@ -313,12 +385,14 @@ def main():
                     "gradient_accumulation_steps": GRADIENT_ACCUMULATION_STEPS,
                     "learning_rate": LEARNING_RATE,
                     "num_epochs": NUM_EPOCHS,
+                    "max_steps": MAX_STEPS,
                     "lora_r": LORA_R,
                     "lora_alpha": LORA_ALPHA,
                     "lora_dropout": LORA_DROPOUT,
                     "target_modules": TARGET_MODULES,
                     "bf16": USE_BF16,
                     "fp16": USE_FP16,
+                    "gradient_checkpointing": GRADIENT_CHECKPOINTING,
                 },
             },
             f,

@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 
+from backend.app.api.dependencies.auth import get_current_user
 from backend.app.schemas.chat import (
     ChatRequest,
     ChatResponse,
@@ -13,10 +14,14 @@ chat_orchestrator = ChatOrchestrator()
 
 
 @router.post("/chat/message", response_model=ChatResponse)
-def chat_message(request: ChatRequest):
+def chat_message(
+    request: ChatRequest,
+    current_user: dict = Depends(get_current_user),
+):
     try:
         result = chat_orchestrator.run(
             user_query=request.message,
+            user_id=current_user["user_id"],
             chat_id=request.chat_id,
         )
         return ChatResponse(**result)
@@ -27,18 +32,26 @@ def chat_message(request: ChatRequest):
 
 
 @router.get("/chat/sessions", response_model=list[ChatSessionItem])
-def get_chat_sessions():
+def get_chat_sessions(current_user: dict = Depends(get_current_user)):
     try:
-        sessions = chat_orchestrator.list_sessions()
+        sessions = chat_orchestrator.list_sessions(
+            user_id=current_user["user_id"],
+        )
         return [ChatSessionItem(**item) for item in sessions]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not load chat sessions: {str(e)}")
 
 
 @router.get("/chat/{chat_id}/messages", response_model=list[ChatMessageItem])
-def get_chat_messages(chat_id: str):
+def get_chat_messages(
+    chat_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     try:
-        messages = chat_orchestrator.get_messages(chat_id)
+        messages = chat_orchestrator.get_messages(
+            chat_id=chat_id,
+            user_id=current_user["user_id"],
+        )
         return [ChatMessageItem(**item) for item in messages]
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

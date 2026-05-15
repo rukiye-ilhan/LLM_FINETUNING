@@ -4,12 +4,10 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-import pandas as pd
-
 from src.common.config import ensure_directory, load_yaml_config
 from src.common.logger import get_logger
 from src.rag.data_quality import run_data_quality_checks
-from src.rag.rag_preprocess import preprocess_counsel_dataset
+from src.rag.rag_preprocess import load_counsel_source, preprocess_counsel_dataset
 from src.rag.embedder import TextEmbedder
 from src.rag.vectordb import QdrantVectorDB
 from src.rag.incremental_indexer import run_incremental_index_update
@@ -40,11 +38,15 @@ def main() -> None:
 
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = ensure_directory(pipeline_runs_dir / run_id)
+    qdrant_host = config.get("qdrant", {}).get("host", "localhost")
+    qdrant_port = int(config.get("qdrant", {}).get("port", 6333))
+    hf_local_files_only = bool(config.get("embedding", {}).get("local_files_only", True))
 
     raw_data_path = config["paths"]["raw_data_path"]
+    raw_sheet_name = config["paths"].get("raw_sheet_name")
     logger.info(f"Raw veri okunuyor: {raw_data_path}")
 
-    raw_df = pd.read_csv(raw_data_path)
+    raw_df = load_counsel_source(raw_data_path, sheet_name=raw_sheet_name)
 
     logger.info("Data quality checks çalıştırılıyor...")
     quality_report = run_data_quality_checks(
@@ -66,9 +68,13 @@ def main() -> None:
             )
 
     logger.info("RAG corpus üretiliyor...")
+    configured_topics = config["rag"].get("target_topics", [])
+    target_topics = set(configured_topics) if configured_topics else None
+
     corpus_df = preprocess_counsel_dataset(
         file_path=raw_data_path,
-        target_topics=set(config["rag"]["target_topics"]),
+        sheet_name=raw_sheet_name,
+        target_topics=target_topics,
         min_text_length=config["rag"]["min_text_length"],
         remove_urls=config["rag"]["remove_urls"],
     )
@@ -100,13 +106,17 @@ def main() -> None:
     if indexing_enabled and indexing_mode == "full_reindex":
         logger.info("Full reindex başlıyor...")
 
-        embedder = TextEmbedder(model_name=config["embedding"]["model_name"])
+        embedder = TextEmbedder(
+            model_name=config["embedding"]["model_name"],
+            local_files_only=hf_local_files_only,
+        )
         vector_size = embedder.get_embedding_dimension()
 
         vectordb = QdrantVectorDB(
             collection_name=config["rag"]["collection_name"],
             vector_size=vector_size,
-            db_path=config["paths"]["vector_db_path"],
+            host=qdrant_host,
+            port=qdrant_port,
         )
 
         vectordb.recreate_collection()
@@ -133,6 +143,9 @@ def main() -> None:
                     "views": int(row["views"]),
                     "answer_length": int(row["answer_length"]),
                     "quality_score": float(row["quality_score"]),
+                    "detected_approach": row.get("detected_approach", ""),
+                    "revision_status": row.get("revision_status", ""),
+                    "context_cluster": row.get("context_cluster", ""),
                     "rag_document": row["rag_document"],
                 }
             )
@@ -151,6 +164,9 @@ def main() -> None:
             embedding_model_name=config["embedding"]["model_name"],
             embedding_batch_size=config["embedding"]["batch_size"],
             registry_path=config["indexing"]["registry_path"],
+            qdrant_host=qdrant_host,
+            qdrant_port=qdrant_port,
+            embedding_local_files_only=hf_local_files_only,
         )
 
         indexed_count = int(incremental_report["delta_indexed_count"])
@@ -173,6 +189,8 @@ def main() -> None:
         "processed_row_count": int(len(corpus_df)),
         "indexed_count": int(indexed_count),
         "collection_name": config["rag"]["collection_name"],
+        "qdrant_host": qdrant_host,
+        "qdrant_port": qdrant_port,
         "indexing_enabled": bool(indexing_enabled),
         "indexing_mode": indexing_mode,
         "quality_overall_pass": bool(quality_report["overall_pass"]),

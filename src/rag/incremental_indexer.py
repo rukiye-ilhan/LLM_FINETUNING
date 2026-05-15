@@ -31,6 +31,9 @@ def build_payloads_from_df(df: pd.DataFrame):
                 "views": int(row["views"]),
                 "answer_length": int(row["answer_length"]),
                 "quality_score": float(row["quality_score"]),
+                "detected_approach": row.get("detected_approach", ""),
+                "revision_status": row.get("revision_status", ""),
+                "context_cluster": row.get("context_cluster", ""),
                 "rag_document": row["rag_document"],
             }
         )
@@ -44,6 +47,9 @@ def run_incremental_index_update(
     embedding_model_name: str,
     embedding_batch_size: int,
     registry_path: str,
+    qdrant_host: str = "localhost",
+    qdrant_port: int = 6333,
+    embedding_local_files_only: bool = True,
 ) -> Dict[str, Any]:
     old_registry = load_registry(registry_path)
     new_registry = build_registry_from_corpus(corpus_df)
@@ -55,15 +61,18 @@ def run_incremental_index_update(
     delta_doc_ids = set(new_doc_ids + changed_doc_ids)
     delta_df = corpus_df[corpus_df["doc_id"].astype(str).isin(delta_doc_ids)].copy()
 
-    embedder = TextEmbedder(model_name=embedding_model_name)
+    embedder = TextEmbedder(
+        model_name=embedding_model_name,
+        local_files_only=embedding_local_files_only,
+    )
     vector_size = embedder.get_embedding_dimension()
 
     vectordb = QdrantVectorDB(
-    collection_name=COLLECTION_NAME,
-    vector_size=vector_size,
-    host="localhost",
-    port=6333,
-)
+        collection_name=collection_name,
+        vector_size=vector_size,
+        host=qdrant_host,
+        port=qdrant_port,
+    )
 
     indexed_count = 0
     deleted_count = 0

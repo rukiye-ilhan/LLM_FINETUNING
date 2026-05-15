@@ -180,11 +180,6 @@ export default function AuthPage({ onAuthSuccess }: AuthPageProps) {
             <LogIn className="h-4 w-4" />
             {isLoading ? "İşleniyor..." : isRegister ? "Kayıt Ol" : "Giriş Yap"}
           </button>
-
-          <p className="mt-5 text-xs leading-6 text-slate-400">
-            Demo için kayıt oluşturup hemen giriş yapabilirsin. Local SQLite
-            içinde saklanır.
-          </p>
         </div>
       </section>
     </main>

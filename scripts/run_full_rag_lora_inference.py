@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import re
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -31,23 +32,43 @@ logger = logging.getLogger(__name__)
 # =========================
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-BASE_MODEL_PATH = BASE_DIR / "models" / "base_llm"
-ADAPTER_PATH = BASE_DIR / "outputs" / "lora_adapter"
-COUNSEL_FULL_PATH = BASE_DIR / "data" / "gold" / "counsel_full.parquet"
+def resolve_repo_path(value: str | Path) -> Path:
+    path = Path(value)
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    return path.resolve()
+
+
+BASE_MODEL_PATH = resolve_repo_path(
+    os.getenv("BASE_MODEL_PATH", str(BASE_DIR / "models" / "base_llm"))
+)
+ADAPTER_PATH = resolve_repo_path(
+    os.getenv("LORA_ADAPTER_PATH", str(BASE_DIR / "outputs" / "lora_adapter"))
+)
+COUNSEL_FULL_PATH = resolve_repo_path(
+    os.getenv("COUNSEL_FULL_PATH", str(BASE_DIR / "data" / "gold" / "counsel_full.parquet"))
+)
 
 
 # =========================
 # RAG / EMBEDDING CONFIG
 # =========================
 EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-QDRANT_HOST = "localhost"
-QDRANT_PORT = 6333
+HF_LOCAL_FILES_ONLY = os.getenv("HF_LOCAL_FILES_ONLY", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "y",
+    "on",
+}
+QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
+QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 
 # Eğer kendi collection adın farklıysa bunu değiştir
-QDRANT_COLLECTION_NAME = "counsel_rag"
+QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "counsel_rag")
 
-TOP_K = 4
-MAX_NEW_TOKENS = 120
+TOP_K = int(os.getenv("TOP_K", "4"))
+MAX_NEW_TOKENS = int(os.getenv("MAX_NEW_TOKENS", "120"))
 
 
 # =========================
@@ -184,6 +205,8 @@ def build_prompt(
         "Do not continue with another example.\n"
         "Do not write titles, labels, or extra sections.\n"
         "Do not claim to be a therapist or give diagnosis.\n\n"
+        "Answer as a direct supportive assistant, not as a forum commenter.\n"
+        "Do not say you are not a professional, do not say you have heard things, and do not use casual openings like 'yeah' or 'look'.\n\n"
         f"Retrieved Context Count: {document_count}\n"
         f"Retrieved Topics: {topics_used}\n\n"
         f"Context:\n{context_text}\n\n"
@@ -272,6 +295,7 @@ class HybridRetriever:
         self.embed_model_name = embed_model_name
         self.qdrant_host = qdrant_host
         self.qdrant_port = qdrant_port
+        self.local_files_only = HF_LOCAL_FILES_ONLY
 
         self.embedder = None
         self.qdrant_client = None
@@ -281,7 +305,10 @@ class HybridRetriever:
 
     def load(self):
         logger.info("Embedder yükleniyor...")
-        self.embedder = SentenceTransformer(self.embed_model_name)
+        self.embedder = SentenceTransformer(
+            self.embed_model_name,
+            local_files_only=self.local_files_only,
+        )
 
         logger.info("Local counsel parquet yükleniyor...")
         if not self.parquet_path.exists():
@@ -484,7 +511,9 @@ def run_pipeline(user_query: str, retriever: HybridRetriever, llm: LoraInference
 # MAIN
 # =========================
 def main():
-    logger.info("Full RAG + LoRA inference başladı...")
+    logger.info("Full RAG + LoRA inference started...")
+    logger.info("Base model path: %s", BASE_MODEL_PATH)
+    logger.info("LoRA adapter path: %s", ADAPTER_PATH)
 
     llm = LoraInferenceEngine(
         base_model_path=BASE_MODEL_PATH,
@@ -501,8 +530,11 @@ def main():
     )
     retriever.load()
 
-    # Burayı istediğin query ile değiştir
-    user_query = "I feel overwhelmed at work and I keep thinking that I'm not good enough. I want to handle this in a healthier way."
+    user_query = os.getenv(
+        "TEST_USER_QUERY",
+        "I feel overwhelmed at work and I keep thinking that I'm not good enough. "
+        "I want to handle this in a healthier way.",
+    )
 
     result = run_pipeline(user_query=user_query, retriever=retriever, llm=llm)
 

@@ -19,6 +19,9 @@ class ChatResponse(BaseModel):
     tone: str
     retrieved_topics: List[str]
     retrieved_document_count: int
+    retrieval_used: bool
+    retrieval_strategy: str
+    memory_turn_count: int
 
     safety_flag: bool
     safety_reason: Optional[str] = None

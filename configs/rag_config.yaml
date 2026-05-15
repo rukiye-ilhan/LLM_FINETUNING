@@ -3,7 +3,8 @@ project:
   environment: "local"
 
 paths:
-  raw_data_path: "data/raw/counsel_chat_orijinal.csv"
+  raw_data_path: "data/raw/counsel_revised_zero_data_loss.xlsx"
+  raw_sheet_name: "rag_ready"
   processed_dir: "data/processed"
   reports_dir: "data/reports"
   vector_db_path: "data/vector_db"
@@ -14,13 +15,8 @@ rag:
   min_text_length: 15
   remove_urls: true
 
-  target_topics:
-    - "anxiety"
-    - "depression"
-    - "self-esteem"
-    - "workplace-relationships"
-    - "stress"
-    - "behavioral-change"
+  # Empty means keep every revised counsel topic for zero data loss.
+  target_topics: []
 
   primary_topics:
     - "anxiety"
@@ -32,13 +28,18 @@ rag:
     - "workplace-relationships"
     - "behavioral-change"
 
+qdrant:
+  host: "localhost"
+  port: 6333
+
 indexing:
   enabled: true
-  mode: "incremental_update"   # full_reindex | incremental_update | skip_for_now
+  mode: "full_reindex"   # full_reindex | incremental_update | skip_for_now
   registry_path: "artifacts/pipeline_runs/corpus_registry.json"
 
 embedding:
   model_name: "sentence-transformers/all-MiniLM-L6-v2"
+  local_files_only: true
   batch_size: 32
 
 quality:

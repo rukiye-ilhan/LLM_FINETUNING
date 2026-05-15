@@ -8,7 +8,7 @@ export default function SystemInfoCard({ info }: SystemInfoCardProps) {
   if (!info) return null;
 
   return (
-    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
         <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
           Emotion
@@ -45,8 +45,26 @@ export default function SystemInfoCard({ info }: SystemInfoCardProps) {
         </p>
       </div>
 
+      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+          RAG Strategy
+        </p>
+        <p className="text-sm text-slate-800">
+          {info.retrieval_strategy || (info.retrieval_used ? "retrieved" : "memory")}
+        </p>
+      </div>
+
+      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+          Memory Turns
+        </p>
+        <p className="text-sm text-slate-800">
+          {info.memory_turn_count ?? 0}
+        </p>
+      </div>
+
       {info.safety_flag && (
-        <div className="md:col-span-2 xl:col-span-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+        <div className="md:col-span-2 xl:col-span-6 rounded-2xl border border-amber-200 bg-amber-50 p-4">
           <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-amber-700">
             Safety Notice
           </p>

@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ArrowUpRight,
   Loader2,
+  LogOut,
   MessageCircle,
   Plus,
   Send,
@@ -16,7 +16,18 @@ import MessageBubble from "@/components/MessageBubble";
 import SystemInfoCard from "@/components/SystemInfoCard";
 import WellnessPanel from "@/components/WellnessPanel";
 import { getChats, getMessages, sendMessage } from "@/lib/api";
-import { ChatMessage, ChatSession, SystemInfo } from "@/types/chat";
+import { AuthUser, ChatMessage, ChatSession, SystemInfo } from "@/types/chat";
+
+type ChatBoxProps = {
+  user: AuthUser;
+  onLogout: () => void;
+};
+
+const welcomeMessage: ChatMessage = {
+  role: "assistant",
+  content:
+    "Hoş geldin. Bugün senin için sakin ve berrak bir alan hazırladım. Zihnini boşaltmak istediğin her şeyi buraya bırakabilirsin.",
+};
 
 const starterPrompts = [
   "I have been feeling overwhelmed lately and I want to talk about what has been affecting me.",
@@ -24,61 +35,58 @@ const starterPrompts = [
   "Help me understand what I am feeling right now.",
 ];
 
-export default function ChatBox() {
+export default function ChatBox({ user, onLogout }: ChatBoxProps) {
   const [inputText, setInputText] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
-  const [currentChatTitle, setCurrentChatTitle] = useState<string>("Yeni Oturum");
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      role: "assistant",
-      content:
-        "Hoş geldin. Bugün senin için sakin ve berrak bir alan hazırladım. Zihnini boşaltmak istediğin her şeyi buraya bırakabilirsin.",
-    },
-  ]);
+  const [currentChatTitle, setCurrentChatTitle] = useState("Yeni Oturum");
+  const [messages, setMessages] = useState<ChatMessage[]>([welcomeMessage]);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [error, setError] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
-
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages, isLoading]);
-
-  const loadSessions = async () => {
+  const loadSessions = useCallback(async () => {
     try {
       const data = await getChats();
       setSessions(data);
-    } catch {
+    } catch (err) {
+      console.error(err);
       setSessions([]);
     }
-  };
+  }, []);
+
+  const resetChatState = useCallback(() => {
+    setCurrentChatId(null);
+    setCurrentChatTitle("Yeni Oturum");
+    setMessages([welcomeMessage]);
+    setSessions([]);
+    setSystemInfo(null);
+    setError("");
+    setInputText("");
+    setIsLoading(false);
+  }, []);
+
+  useEffect(() => {
+    resetChatState();
+    loadSessions();
+  }, [user.user_id, resetChatState, loadSessions]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isLoading]);
 
   const loadChatMessages = async (chatId: string) => {
     try {
       const data = await getMessages(chatId);
       setMessages(
-        data.length
-          ? data
-          : [
-              {
-                role: "assistant",
-                content: "Bu konuşma henüz boş.",
-              },
-            ]
+        data.length ? data : [{ role: "assistant", content: "Bu konuşma henüz boş." }]
       );
-    } catch {
+    } catch (err) {
+      console.error(err);
       setError("Konuşma geçmişi yüklenemedi.");
     }
   };
-
-  useEffect(() => {
-    loadSessions();
-  }, []);
 
   const handleNewChat = () => {
     setCurrentChatId(null);
@@ -109,12 +117,8 @@ export default function ChatBox() {
     if (!text.trim() || isLoading) return;
 
     const currentInput = text.trim();
-    const optimisticUserMessage: ChatMessage = {
-      role: "user",
-      content: currentInput,
-    };
 
-    setMessages((prev) => [...prev, optimisticUserMessage]);
+    setMessages((prev) => [...prev, { role: "user", content: currentInput }]);
     setInputText("");
     setIsLoading(true);
     setError("");
@@ -132,6 +136,9 @@ export default function ChatBox() {
         tone: data.tone,
         retrieved_topics: data.retrieved_topics,
         retrieved_document_count: data.retrieved_document_count,
+        retrieval_used: data.retrieval_used,
+        retrieval_strategy: data.retrieval_strategy,
+        memory_turn_count: data.memory_turn_count,
         safety_flag: data.safety_flag,
         safety_reason: data.safety_reason,
       });
@@ -154,17 +161,17 @@ export default function ChatBox() {
         {
           role: "error",
           content:
-            "Mesaj gönderilemedi. Backend bağlantısını, endpoint formatını ve CORS ayarını kontrol et.",
+            "Mesaj gönderilemedi. Backend bağlantısını, token bilgisini veya CORS ayarını kontrol et.",
         },
       ]);
-      setError("Request başarısız. Backend çalışıyor mu ve /api/v1/chat/message endpointi açık mı kontrol et.");
+      setError("Request başarısız. Backend açık mı ve giriş tokenı geçerli mi kontrol et.");
     } finally {
       setIsLoading(false);
     }
   };
 
   return (
-    <div className="relative min-h-screen">
+    <main className="relative min-h-screen overflow-hidden bg-[#f7faf8] text-slate-900">
       <div className="pointer-events-none absolute left-24 top-16 h-72 w-72 rounded-full bg-sky-100/60 blur-3xl" />
       <div className="pointer-events-none absolute bottom-24 right-36 h-80 w-80 rounded-full bg-emerald-100/70 blur-3xl" />
 
@@ -194,20 +201,30 @@ export default function ChatBox() {
                 </h1>
 
                 <p className="mt-4 max-w-2xl text-sm leading-7 text-slate-500 md:text-base">
-                  RAG ile ilgili bağlamı getirir, duygu tonunu algılar ve LoRA
-                  destekli yanıt üretir. Yan taraftaki nefes ve doğa sesleri
-                  sunumda projeyi çok daha etkileyici gösterir.
+                  Bu oturum <b>{user.name}</b> kullanıcısına özel. Chat geçmişi
+                  sadece giriş yapan kullanıcının tokenı ile listelenir.
                 </p>
               </div>
 
-              <button
-                type="button"
-                onClick={handleNewChat}
-                className="inline-flex items-center justify-center gap-2 rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-slate-200 transition hover:-translate-y-0.5 hover:bg-slate-800"
-              >
-                <Plus className="h-4 w-4" />
-                Yeni oturum
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={handleNewChat}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-slate-200 transition hover:-translate-y-0.5 hover:bg-slate-800"
+                >
+                  <Plus className="h-4 w-4" />
+                  Yeni oturum
+                </button>
+
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                >
+                  <LogOut className="h-4 w-4" />
+                  Çıkış
+                </button>
+              </div>
             </div>
 
             <div className="mt-6 grid gap-3 md:grid-cols-3">
@@ -222,10 +239,10 @@ export default function ChatBox() {
 
               <div className="rounded-3xl bg-white/70 p-4">
                 <p className="text-xs font-bold uppercase tracking-[0.25em] text-slate-400">
-                  Sistem
+                  Kullanıcı
                 </p>
-                <p className="mt-2 text-sm font-semibold text-slate-800">
-                  RAG + Emotion + LoRA
+                <p className="mt-2 truncate text-sm font-semibold text-slate-800">
+                  {user.email}
                 </p>
               </div>
 
@@ -235,7 +252,7 @@ export default function ChatBox() {
                 </p>
                 <p className="mt-2 inline-flex items-center gap-2 text-sm font-semibold text-slate-800">
                   <ShieldCheck className="h-4 w-4 text-emerald-500" />
-                  Safety flag izleniyor
+                  Auth + private chat
                 </p>
               </div>
             </div>
@@ -244,19 +261,16 @@ export default function ChatBox() {
           <SystemInfoCard info={systemInfo} />
 
           <div className="rounded-[2rem] border border-white/70 bg-white/80 shadow-[0_24px_80px_rgba(15,23,42,0.07)] backdrop-blur">
-            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
-              <div className="flex items-center gap-3">
-                <div className="grid h-11 w-11 place-items-center rounded-2xl bg-slate-900 text-white">
-                  <MessageCircle className="h-5 w-5" />
-                </div>
-                <div>
-                  <h2 className="font-semibold text-slate-900">Sohbet</h2>
-                  <p className="text-xs text-slate-500">
-                    Yaz, sistem duygu + bağlam + ton üretimini göstersin.
-                  </p>
-                </div>
+            <div className="flex items-center gap-3 border-b border-slate-100 px-5 py-4">
+              <div className="grid h-11 w-11 place-items-center rounded-2xl bg-slate-900 text-white">
+                <MessageCircle className="h-5 w-5" />
               </div>
-              <ArrowUpRight className="h-5 w-5 text-slate-300" />
+              <div>
+                <h2 className="font-semibold text-slate-900">Sohbet</h2>
+                <p className="text-xs text-slate-500">
+                  Yaz, sistem duygu + bağlam + ton üretimini göstersin.
+                </p>
+              </div>
             </div>
 
             <div className="max-h-[560px] min-h-[420px] space-y-4 overflow-y-auto p-5">
@@ -362,6 +376,6 @@ export default function ChatBox() {
           <WellnessPanel />
         </div>
       </div>
-    </div>
+    </main>
   );
 }

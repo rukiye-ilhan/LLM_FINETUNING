@@ -102,16 +102,22 @@ def get_tone_from_topic(topic: str) -> str:
 # =========================
 def build_rag_record(row: pd.Series) -> Dict:
     tone = get_tone_from_topic(row["topic"])
+    output_text = row.get("answer_for_generation", row["answer_text"])
+    if not isinstance(output_text, str) or not output_text.strip():
+        output_text = row["answer_text"]
 
     return {
-        "instruction": "Answer the user using the provided context. Be empathetic, grounded, and do not go beyond the context.",
+        "instruction": (
+            "Answer the user using the provided context. Be empathetic, grounded, "
+            "and do not go beyond the context. Rewrite forum-style context as a direct supportive assistant."
+        ),
         "input": (
             f"Context:\n{row['rag_document']}\n\n"
             f"User Question: {row['question_text']}\n"
             f"Topic: {row['topic']}\n"
             f"Tone: {tone}"
         ),
-        "output": row["answer_text"],
+        "output": output_text,
         "source": "rag_tone",
     }
 

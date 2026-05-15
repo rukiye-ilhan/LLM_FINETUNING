@@ -20,6 +20,9 @@ export type SystemInfo = {
   tone: string;
   retrieved_topics: string[];
   retrieved_document_count: number;
+  retrieval_used: boolean;
+  retrieval_strategy: string;
+  memory_turn_count: number;
   safety_flag: boolean;
   safety_reason?: string | null;
 };
@@ -38,6 +41,9 @@ export type ChatResponse = {
   tone: string;
   retrieved_topics: string[];
   retrieved_document_count: number;
+  retrieval_used: boolean;
+  retrieval_strategy: string;
+  memory_turn_count: number;
   safety_flag: boolean;
   safety_reason?: string | null;
 };

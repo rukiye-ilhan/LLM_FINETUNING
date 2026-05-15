@@ -10,6 +10,7 @@ from sentence_transformers import SentenceTransformer
 from backend.app.core.config import (
     COUNSEL_FULL_PATH,
     EMBED_MODEL_NAME,
+    HF_LOCAL_FILES_ONLY,
     QDRANT_COLLECTION_NAME,
     QDRANT_HOST,
     QDRANT_PORT,
@@ -19,7 +20,10 @@ from backend.app.core.config import (
 
 class RagService:
     def __init__(self):
-        self.embedder = SentenceTransformer(EMBED_MODEL_NAME)
+        self.embedder = SentenceTransformer(
+            EMBED_MODEL_NAME,
+            local_files_only=HF_LOCAL_FILES_ONLY,
+        )
         self.qdrant_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
         self.local_df = pd.read_parquet(COUNSEL_FULL_PATH)
 
@@ -114,6 +118,7 @@ class RagService:
     def _build_context_result(self, rows: list[dict]) -> dict:
         context_chunks = []
         topics_used = []
+        clean_documents = []
 
         for item in rows:
             topic = item.get("topic", "unknown")
@@ -125,6 +130,12 @@ class RagService:
                 continue
 
             topics_used.append(topic)
+            clean_documents.append(
+                {
+                    **item,
+                    "rag_document": doc,
+                }
+            )
 
             context_chunks.append(
                 f"[Document]\n"
@@ -138,7 +149,7 @@ class RagService:
             "context_text": "\n\n".join(context_chunks),
             "document_count": len(context_chunks),
             "topics_used": list(dict.fromkeys(topics_used)),
-            "documents": rows,
+            "documents": clean_documents,
         }
 
     def _qdrant_collection_exists(self) -> bool:

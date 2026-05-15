@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -18,7 +19,19 @@ logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 BASE_MODEL_PATH = BASE_DIR / "models" / "base_llm"
-ADAPTER_PATH = BASE_DIR / "outputs" / "lora_adapter"
+
+
+def resolve_repo_path(value: str | Path) -> Path:
+    path = Path(value)
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    return path.resolve()
+
+
+ADAPTER_PATH = resolve_repo_path(
+    os.getenv("LORA_ADAPTER_PATH", str(BASE_DIR / "outputs" / "lora_adapter"))
+)
+MAX_NEW_TOKENS = int(os.getenv("MAX_NEW_TOKENS", "120"))
 
 
 TEST_USER_QUERY = (
@@ -50,6 +63,8 @@ def build_test_prompt(
         "Be empathetic, grounded, concise, and practical.\n"
         "Do not continue with another example.\n"
         "Do not write titles, labels, or extra sections.\n\n"
+        "Answer as a direct supportive assistant, not as a forum commenter.\n"
+        "Do not say you are not a professional, do not say you have heard things, and do not use casual openings like 'yeah' or 'look'.\n\n"
         f"Context:\n{context_text}\n\n"
         f"User: {user_query}\n"
         f"Emotion: {predicted_emotion}\n"
@@ -103,6 +118,11 @@ def main():
     logger.info("CUDA available: %s", torch.cuda.is_available())
     if torch.cuda.is_available():
         logger.info("GPU: %s", torch.cuda.get_device_name(0))
+    logger.info("Base model path: %s", BASE_MODEL_PATH)
+    logger.info("LoRA adapter path: %s", ADAPTER_PATH)
+
+    if not ADAPTER_PATH.exists():
+        raise FileNotFoundError(f"LoRA adapter path does not exist: {ADAPTER_PATH}")
 
     tokenizer = AutoTokenizer.from_pretrained(
         BASE_MODEL_PATH,
@@ -142,7 +162,7 @@ def main():
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=80,
+            max_new_tokens=MAX_NEW_TOKENS,
             do_sample=False,
             repetition_penalty=1.1,
             pad_token_id=tokenizer.eos_token_id,
